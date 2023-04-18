@@ -32,7 +32,7 @@ pub struct IMAGE_DATA_DIRECTORY {
     pub Size: u32,
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Default)]
 #[repr(C)]
 #[cfg(target_arch = "x86")]
 pub struct IMAGE_NT_HEADERS32 {
@@ -40,7 +40,8 @@ pub struct IMAGE_NT_HEADERS32 {
     pub FileHeader: IMAGE_FILE_HEADER,
     pub OptionalHeader: IMAGE_OPTIONAL_HEADER32,
 }
-#[derive(Debug, Default, Clone)]
+
+#[derive(Default)]
 #[repr(C)]
 #[cfg(target_arch = "x86_64")]
 pub struct IMAGE_NT_HEADERS64 {
@@ -98,7 +99,7 @@ pub struct IMAGE_OPTIONAL_HEADER32 {
     pub DataDirectory: [IMAGE_DATA_DIRECTORY; 16],
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Default)]
 #[repr(C, packed(4))]
 #[cfg(target_arch = "x86_64")]
 pub struct IMAGE_OPTIONAL_HEADER64 {
