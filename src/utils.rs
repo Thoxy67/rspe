@@ -1,3 +1,8 @@
+use alloc::{
+    string::{String, ToString},
+    vec::Vec,
+};
+
 /// This function converts a mutable u8 array to a String.
 /// It iterates through the array and appends each character to a new String.
 /// If it encounters a null character, it returns the String.
@@ -47,14 +52,14 @@ pub fn get_string_fromi8_array(arr: &mut [i8]) -> String {
 /// A string containing the characters read from memory.
 pub fn read_string_from_memory(baseaddress: *const u8) -> String {
     // Create a vector of 100 u8s
-    let mut temp: Vec<u8> = vec![0; 100];
+    let mut temp: Vec<u8> = alloc::vec![0; 100];
 
     // Iterate through the memory at the given address
     let mut i = 0;
     while i < temp.capacity() {
         // Copy the memory at the current address to the vector
         let _res = unsafe {
-            std::ptr::copy_nonoverlapping(
+            core::ptr::copy_nonoverlapping(
                 (baseaddress as usize + i) as *const u8,
                 (temp.as_mut_ptr() as usize + i as usize) as *mut u8,
                 1,

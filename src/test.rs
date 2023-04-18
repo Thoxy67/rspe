@@ -1,11 +1,5 @@
 #[cfg(test)]
 mod tests {
-    use std::ffi::c_void;
-
-    use windows_sys::Win32::System::Memory::VirtualAlloc;
-    use windows_sys::Win32::System::Memory::MEM_COMMIT;
-    use windows_sys::Win32::System::Memory::PAGE_EXECUTE_READWRITE;
-
     use crate::pelib::fix_base_relocations;
     use crate::pelib::get_dos_header;
     use crate::pelib::get_headers_size;
@@ -13,6 +7,10 @@ mod tests {
     use crate::pelib::get_nt_header;
     use crate::pelib::write_import_table;
     use crate::pelib::write_sections;
+    use crate::windows::VirtualAlloc;
+    use crate::windows::MEM_COMMIT;
+    use crate::windows::PAGE_EXECUTE_READWRITE;
+    use core::ffi::c_void;
 
     #[test]
     fn test_get_headers_size() {
@@ -32,7 +30,7 @@ mod tests {
         let imagesize = get_image_size(&buffer);
         let baseptr = unsafe {
             VirtualAlloc(
-                std::ptr::null_mut(),
+                core::ptr::null_mut(),
                 imagesize,
                 MEM_COMMIT,
                 PAGE_EXECUTE_READWRITE,
@@ -51,7 +49,7 @@ mod tests {
         let imagesize = get_image_size(&buffer);
         let baseptr = unsafe {
             VirtualAlloc(
-                std::ptr::null_mut(),
+                core::ptr::null_mut(),
                 imagesize,
                 MEM_COMMIT,
                 PAGE_EXECUTE_READWRITE,
@@ -70,7 +68,7 @@ mod tests {
         let imagesize = get_image_size(&buffer);
         let baseptr = unsafe {
             VirtualAlloc(
-                std::ptr::null_mut(),
+                core::ptr::null_mut(),
                 imagesize,
                 MEM_COMMIT,
                 PAGE_EXECUTE_READWRITE,

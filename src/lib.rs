@@ -1,15 +1,21 @@
+#![no_std]
+#![no_main]
+
+extern crate alloc;
 pub mod pelib;
 pub mod test;
 pub mod utils;
+pub mod windows;
 
+use alloc::vec::Vec;
 use pelib::{
     fix_base_relocations, get_dos_header, get_headers_size, get_image_size, get_nt_header,
     write_import_table, write_sections,
 };
 use utils::detect_platform;
-use windows_sys::Win32::System::Memory::{VirtualAlloc, MEM_COMMIT, PAGE_EXECUTE_READWRITE};
+use windows::{VirtualAlloc, MEM_COMMIT, PAGE_EXECUTE_READWRITE};
 
-use std::ffi::c_void;
+use core::ffi::c_void;
 
 /// Compares the platform of the imported Portable Executable (PE) file with the platform of the compiled binary.
 /// Panic if not same platforms
@@ -23,14 +29,9 @@ fn is_platforms_same(data: Vec<u8>) {
     let target_arch = if cfg!(target_arch = "x86_64") { 64 } else { 32 };
 
     if platform != target_arch {
-        println!(
-            "Compiled platform : {}bit\tNeeded platform : {}bit",
-            target_arch, platform
-        );
         panic!("The platform not the same as the imported pe.")
     }
 }
-
 
 /// Loads a Portable Executable (PE) file into memory using reflective loading.
 ///
@@ -51,14 +52,14 @@ pub unsafe fn reflective_loader(buffer: Vec<u8>) {
 
     // Allocate memory for the image
     let baseptr = VirtualAlloc(
-        std::ptr::null_mut(), // lpAddress: A pointer to the starting address of the region to allocate.
-        imagesize,            // dwSize: The size of the region, in bytes.
-        MEM_COMMIT,           // flAllocationType: The type of memory allocation.
+        core::ptr::null_mut(), // lpAddress: A pointer to the starting address of the region to allocate.
+        imagesize,             // dwSize: The size of the region, in bytes.
+        MEM_COMMIT,            // flAllocationType: The type of memory allocation.
         PAGE_EXECUTE_READWRITE, // flProtect: The memory protection for the region of pages to be allocated.
     );
 
     // Write the headers to the allocated memory
-    std::ptr::copy_nonoverlapping(buffer.as_ptr() as *const c_void, baseptr, headerssize);
+    core::ptr::copy_nonoverlapping(buffer.as_ptr() as *const c_void, baseptr, headerssize);
 
     // Get the DOS header
     let dosheader = get_dos_header(buffer.as_ptr() as *const c_void);
@@ -82,12 +83,12 @@ pub unsafe fn reflective_loader(buffer: Vec<u8>) {
 
     #[cfg(target_arch = "x86_64")]
     let entrypoint = (baseptr as usize
-        + (*(ntheader as *const windows_sys::Win32::System::Diagnostics::Debug::IMAGE_NT_HEADERS32))
+        + (*(ntheader as *const windows::IMAGE_NT_HEADERS64))
             .OptionalHeader
             .AddressOfEntryPoint as usize) as *const c_void;
     #[cfg(target_arch = "x86")]
     let entrypoint = (baseptr as usize
-        + (*(ntheader as *const windows_sys::Win32::System::Diagnostics::Debug::IMAGE_NT_HEADERS32))
+        + (*(ntheader as *const windows::IMAGE_NT_HEADERS32))
             .OptionalHeader
             .AddressOfEntryPoint as usize) as *const c_void;
 
@@ -110,6 +111,6 @@ pub unsafe fn reflective_loader(buffer: Vec<u8>) {
 /// in the target process.
 unsafe fn execute_image(entrypoint: *const c_void) {
     // Call the entry point of the image
-    let func: extern "C" fn() -> u32 = std::mem::transmute(entrypoint);
+    let func: extern "C" fn() -> u32 = core::mem::transmute(entrypoint);
     func();
 }

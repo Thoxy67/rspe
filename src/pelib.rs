@@ -1,11 +1,11 @@
-use std::ffi::c_void;
+use core::ffi::c_void;
 
-use windows_sys::Win32::System::{
-    Diagnostics::Debug::{IMAGE_DIRECTORY_ENTRY_BASERELOC, IMAGE_DIRECTORY_ENTRY_IMPORT},
-    LibraryLoader::{GetProcAddress, LoadLibraryA},
-    SystemServices::{
-        IMAGE_BASE_RELOCATION, IMAGE_DOS_HEADER, IMAGE_IMPORT_DESCRIPTOR, IMAGE_NT_SIGNATURE,
-    },
+use alloc::vec::Vec;
+
+use crate::windows::{
+    GetProcAddress, LoadLibraryA, IMAGE_BASE_RELOCATION, IMAGE_DIRECTORY_ENTRY_BASERELOC,
+    IMAGE_DIRECTORY_ENTRY_IMPORT, IMAGE_DOS_HEADER, IMAGE_IMPORT_DESCRIPTOR, IMAGE_NT_SIGNATURE,
+    IMAGE_SECTION_HEADER,
 };
 
 /// Function to get the size of the headers
@@ -19,31 +19,33 @@ use windows_sys::Win32::System::{
 /// The size of the headers.
 pub fn get_headers_size(buffer: &[u8]) -> usize {
     // Check if the first two bytes of the buffer are "MZ"
-    if let Some(magic) = buffer.get(0..2) {
-        let magicstring = String::from_utf8_lossy(magic);
-        if magicstring == "MZ" {
-            // Get the offset to the NT header
-            if let Some(ntoffset) = buffer.get(60..64) {
-                let offset = unsafe { std::ptr::read(ntoffset.as_ptr() as *const u32) as usize };
-                // Check the bit version and return the size of the headers
-                match unsafe { std::ptr::read(buffer.as_ptr().add(offset + 4 + 20) as *const u16) }
-                {
+    if buffer.len() >= 2 && buffer[0] == b'M' && buffer[1] == b'Z' {
+        // Get the offset to the NT header
+        if buffer.len() >= 64 {
+            let offset =
+                u32::from_le_bytes([buffer[60], buffer[61], buffer[62], buffer[63]]) as usize;
+            // Check the bit version and return the size of the headers
+            if buffer.len() >= offset + 4 + 20 + 2 {
+                match u16::from_le_bytes([buffer[offset + 4 + 20], buffer[offset + 4 + 20 + 1]]) {
                     523 | 267 => {
-                        let headerssize = unsafe {
-                            std::ptr::read(buffer.as_ptr().add(offset + 24 + 60) as *const u32)
-                        };
+                        let headerssize = u32::from_le_bytes([
+                            buffer[offset + 24 + 60],
+                            buffer[offset + 24 + 60 + 1],
+                            buffer[offset + 24 + 60 + 2],
+                            buffer[offset + 24 + 60 + 3],
+                        ]);
                         return headerssize as usize;
                     }
                     _ => panic!("invalid bit version"),
                 }
             } else {
-                panic!("file size is less than 64");
+                panic!("file size is less than required offset");
             }
         } else {
-            panic!("it's not a PE file");
+            panic!("file size is less than 64");
         }
     } else {
-        panic!("file size is less than 2");
+        panic!("it's not a PE file");
     }
 }
 
@@ -61,26 +63,35 @@ pub fn get_image_size(buffer: &[u8]) -> usize {
     // Get the magic string from the buffer
     let magic = &buffer[0..2];
     // Convert the magic string to a string
-    let magicstring = std::str::from_utf8(magic).expect("invalid magic string");
+    let magicstring = match core::str::from_utf8(magic) {
+        Ok(s) => s,
+        Err(_) => panic!("invalid magic string"),
+    };
     // Check if the magic string is "MZ"
     assert_eq!(magicstring, "MZ", "it's not a PE file");
     // Get the offset to the NT header
-    let offset = unsafe {
+    let offset = {
         let ntoffset = &buffer[60..64];
-        std::ptr::read_unaligned(ntoffset.as_ptr() as *const i32) as usize
+        let mut offset = [0u8; 4];
+        offset.copy_from_slice(ntoffset);
+        i32::from_le_bytes(offset) as usize
     };
     // Get the bit version from the buffer
-    let bit = unsafe {
+    let bit = {
         let bitversion = &buffer[offset + 4 + 20..offset + 4 + 20 + 2];
-        std::ptr::read_unaligned(bitversion.as_ptr() as *const u16)
+        let mut bit = [0u8; 2];
+        bit.copy_from_slice(bitversion);
+        u16::from_le_bytes(bit)
     };
     // Check the bit version and return the size of the image
     match bit {
         523 | 267 => {
             let index = offset + 24 + 60 - 4;
-            let size = unsafe {
+            let size = {
                 let headerssize = &buffer[index..index + 4];
-                std::ptr::read_unaligned(headerssize.as_ptr() as *const i32)
+                let mut size = [0u8; 4];
+                size.copy_from_slice(headerssize);
+                i32::from_le_bytes(size)
             };
             size as usize
         }
@@ -116,13 +127,19 @@ pub fn get_nt_header(
     lp_dos_header: *const IMAGE_DOS_HEADER,
 ) -> *const c_void {
     // Calculate the address of the NT header
+    #[cfg(target_arch = "x86_64")]
     let lp_nt_header = unsafe {
         (lp_image as usize + (*lp_dos_header).e_lfanew as usize)
-            as *const windows_sys::Win32::System::Diagnostics::Debug::IMAGE_NT_HEADERS32
+            as *const crate::windows::IMAGE_NT_HEADERS64
+    };
+    #[cfg(target_arch = "x86")]
+    let lp_nt_header = unsafe {
+        (lp_image as usize + (*lp_dos_header).e_lfanew as usize)
+            as *const crate::windows::IMAGE_NT_HEADERS32
     };
     // Check if the NT header signature is valid
     if unsafe { (*lp_nt_header).Signature } != IMAGE_NT_SIGNATURE {
-        return std::ptr::null_mut();
+        return core::ptr::null_mut();
     }
     lp_nt_header as *const c_void
 }
@@ -134,11 +151,13 @@ pub fn get_nt_header(
 /// The size of the NT header.
 fn get_nt_header_size() -> usize {
     #[cfg(target_arch = "x86")]
-    return std::mem::size_of::<windows_sys::Win32::System::Diagnostics::Debug::IMAGE_NT_HEADERS32>(
-    );
+    {
+        core::mem::size_of::<crate::windows::IMAGE_NT_HEADERS32>()
+    }
     #[cfg(target_arch = "x86_64")]
-    return std::mem::size_of::<windows_sys::Win32::System::Diagnostics::Debug::IMAGE_NT_HEADERS64>(
-    );
+    {
+        core::mem::size_of::<crate::windows::IMAGE_NT_HEADERS64>()
+    }
 }
 
 /// Returns the number of sections in the PE file based on the target architecture.
@@ -153,13 +172,13 @@ fn get_nt_header_size() -> usize {
 fn get_number_of_sections(ntheader: *const c_void) -> u16 {
     #[cfg(target_arch = "x86_64")]
     return unsafe {
-        (*(ntheader as *const windows_sys::Win32::System::Diagnostics::Debug::IMAGE_NT_HEADERS64))
+        (*(ntheader as *const crate::windows::IMAGE_NT_HEADERS64))
             .FileHeader
             .NumberOfSections
     };
     #[cfg(target_arch = "x86")]
     return unsafe {
-        (*(ntheader as *const windows_sys::Win32::System::Diagnostics::Debug::IMAGE_NT_HEADERS32))
+        (*(ntheader as *const crate::windows::IMAGE_NT_HEADERS32))
             .FileHeader
             .NumberOfSections
     };
@@ -188,25 +207,26 @@ pub fn write_sections(
     let nt_header_size = get_nt_header_size();
 
     let e_lfanew = (unsafe { *dosheader }).e_lfanew as usize;
-    let mut st_section_header = (baseptr as usize + e_lfanew + nt_header_size)
-        as *const windows_sys::Win32::System::Diagnostics::Debug::IMAGE_SECTION_HEADER;
+    let mut st_section_header =
+        (baseptr as usize + e_lfanew + nt_header_size) as *const IMAGE_SECTION_HEADER;
 
     for _i in 0..number_of_sections {
         // Get the section data
         let section_data = buffer
             .get(
-                (unsafe { *st_section_header }).PointerToRawData as usize..((unsafe {
+                unsafe { (*st_section_header).PointerToRawData } as usize..(unsafe {
+                    (*st_section_header).PointerToRawData
+                } + (unsafe {
                     *st_section_header
                 })
-                .PointerToRawData
-                    as usize
-                    + (unsafe { *st_section_header }).SizeOfRawData as usize),
+                .SizeOfRawData)
+                    as usize,
             )
             .unwrap_or_default();
 
         // Write the section data to the allocated memory
         unsafe {
-            std::ptr::copy_nonoverlapping(
+            core::ptr::copy_nonoverlapping(
                 section_data.as_ptr() as *const c_void,
                 (baseptr as usize + (*st_section_header).VirtualAddress as usize) as *mut c_void,
                 (*st_section_header).SizeOfRawData as usize,
@@ -231,18 +251,14 @@ pub fn fix_base_relocations(
 ) {
     // Get the NT header
     #[cfg(target_arch = "x86_64")]
-    let nt_header = unsafe {
-        &(*(ntheader as *const windows_sys::Win32::System::Diagnostics::Debug::IMAGE_NT_HEADERS64))
-            .OptionalHeader
-    };
+    let nt_header =
+        unsafe { &(*(ntheader as *const crate::windows::IMAGE_NT_HEADERS64)).OptionalHeader };
     #[cfg(target_arch = "x86")]
-    let nt_header = unsafe {
-        &(*(ntheader as *const windows_sys::Win32::System::Diagnostics::Debug::IMAGE_NT_HEADERS32))
-            .OptionalHeader
-    };
+    let nt_header =
+        unsafe { &(*(ntheader as *const crate::windows::IMAGE_NT_HEADERS32)).OptionalHeader };
 
     // Get the base relocation directory
-    let basereloc = nt_header.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC as usize];
+    let basereloc = &nt_header.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC as usize];
     if basereloc.Size == 0 {
         return;
     }
@@ -259,37 +275,35 @@ pub fn fix_base_relocations(
     while unsafe { (*relocptr).SizeOfBlock } != 0 {
         // Get the number of entries in the current block
         let entries = (unsafe { (*relocptr).SizeOfBlock }
-            - std::mem::size_of::<IMAGE_BASE_RELOCATION>() as u32)
+            - core::mem::size_of::<IMAGE_BASE_RELOCATION>() as u32)
             / 2;
 
         // Iterate through each entry in the current block
         for i in 0..entries {
             // Get the pointer to the current relocation offset
             let relocoffset_ptr = (relocptr as usize
-                + std::mem::size_of::<IMAGE_BASE_RELOCATION>()
+                + core::mem::size_of::<IMAGE_BASE_RELOCATION>()
                 + i as usize * 2) as *const u16;
 
             // Get the value of the current relocation offset
             let temp = unsafe { *relocoffset_ptr };
 
             // Check if the relocation type is not absolute
-            if temp as u32 >> 12 as u32
-                != windows_sys::Win32::System::SystemServices::IMAGE_REL_BASED_ABSOLUTE
-            {
+            if temp as u32 >> 12 as u32 != crate::windows::IMAGE_REL_BASED_ABSOLUTE {
                 // Calculate the final address of the relocation
                 let finaladdress = baseptr as usize
                     + unsafe { (*relocptr).VirtualAddress } as usize
                     + (temp & 0x0fff) as usize;
 
                 // Read the original value at the final address
-                let ogaddress = unsafe { std::ptr::read(finaladdress as *const usize) };
+                let ogaddress = unsafe { core::ptr::read(finaladdress as *const usize) };
 
                 // Calculate the fixed address of the relocation
                 let fixedaddress = (ogaddress + diffaddress as usize) as usize;
 
                 // Write the fixed address to the final address
                 unsafe {
-                    std::ptr::write(finaladdress as *mut usize, fixedaddress);
+                    core::ptr::write(finaladdress as *mut usize, fixedaddress);
                 }
             }
         }
@@ -311,19 +325,17 @@ pub fn fix_base_relocations(
 /// # Returns
 ///
 /// The import directory of the PE file.
-fn get_import_directory(
-    ntheader: *const c_void,
-) -> windows_sys::Win32::System::Diagnostics::Debug::IMAGE_DATA_DIRECTORY {
+fn get_import_directory(ntheader: *const c_void) -> crate::windows::IMAGE_DATA_DIRECTORY {
     #[cfg(target_arch = "x86_64")]
     return unsafe {
-        (*(ntheader as *const windows_sys::Win32::System::Diagnostics::Debug::IMAGE_NT_HEADERS64))
+        (*(ntheader as *const crate::windows::IMAGE_NT_HEADERS64))
             .OptionalHeader
             .DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT as usize]
     };
 
     #[cfg(target_arch = "x86")]
     return unsafe {
-        (*(ntheader as *const windows_sys::Win32::System::Diagnostics::Debug::IMAGE_NT_HEADERS32))
+        (*(ntheader as *const crate::windows::IMAGE_NT_HEADERS32))
             .OptionalHeader
             .DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT as usize]
     };
@@ -357,13 +369,13 @@ pub fn write_import_table(
         && unsafe { (*(ogfirstthunkptr as *const IMAGE_IMPORT_DESCRIPTOR)).FirstThunk } != 0
     {
         // Get the import descriptor
-        let mut import = unsafe { std::mem::zeroed::<IMAGE_IMPORT_DESCRIPTOR>() };
+        let mut import = unsafe { core::mem::zeroed::<IMAGE_IMPORT_DESCRIPTOR>() };
         //fill_structure_from_memory(&mut import, ogfirstthunkptr as *const c_void);
         unsafe {
-            std::ptr::copy_nonoverlapping(
+            core::ptr::copy_nonoverlapping(
                 ogfirstthunkptr as *const u8,
                 &mut import as *mut IMAGE_IMPORT_DESCRIPTOR as *mut u8,
-                std::mem::size_of::<IMAGE_IMPORT_DESCRIPTOR>(),
+                core::mem::size_of::<IMAGE_IMPORT_DESCRIPTOR>(),
             );
         }
         // Get the name of the DLL
@@ -387,13 +399,13 @@ pub fn write_import_table(
         // and replace the function address with the address of the function in the DLL
         while unsafe { *(thunkptr as *const usize) } != 0 {
             // Get the thunk data
-            let mut thunkdata: [u8; std::mem::size_of::<usize>()] =
-                unsafe { std::mem::zeroed::<[u8; std::mem::size_of::<usize>()]>() };
+            let mut thunkdata: [u8; core::mem::size_of::<usize>()] =
+                unsafe { core::mem::zeroed::<[u8; core::mem::size_of::<usize>()]>() };
             unsafe {
-                std::ptr::copy_nonoverlapping(
+                core::ptr::copy_nonoverlapping(
                     thunkptr as *const u8,
                     &mut thunkdata as *mut u8,
-                    std::mem::size_of::<usize>(),
+                    core::mem::size_of::<usize>(),
                 );
             }
             // Get the offset of the function name
@@ -406,19 +418,18 @@ pub fn write_import_table(
 
             // If the function name is not empty, replace the function address with the address of the function in the DLL
             if !funcname.is_empty() {
-                let funcaddress = unsafe {
-                    GetProcAddress(dllhandle, funcname.as_bytes().as_ptr() as *const u8).unwrap()
-                };
+                let funcaddress =
+                    unsafe { GetProcAddress(dllhandle, funcname.as_bytes().as_ptr() as *const u8) };
                 let funcaddress_ptr = (baseptr as usize
                     + import.FirstThunk as usize
-                    + i * std::mem::size_of::<usize>())
+                    + i * core::mem::size_of::<usize>())
                     as *mut usize;
-                unsafe { std::ptr::write(funcaddress_ptr, funcaddress as usize) };
+                unsafe { core::ptr::write(funcaddress_ptr, funcaddress as usize) };
             }
             i += 1;
             // Move to the next thunk
-            thunkptr += std::mem::size_of::<usize>();
+            thunkptr += core::mem::size_of::<usize>();
         }
-        ogfirstthunkptr += std::mem::size_of::<IMAGE_IMPORT_DESCRIPTOR>();
+        ogfirstthunkptr += core::mem::size_of::<IMAGE_IMPORT_DESCRIPTOR>();
     }
 }
